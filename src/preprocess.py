@@ -1,170 +1,99 @@
 #!/usr/bin/env python3
+
+"""
+Decompress *.tpxz and extract metadata from the *.pcap files
+"""
+
+from __future__ import print_function
+
 import os
-import re
-import socket
-import struct
 import shutil
 import argparse
 import tempfile
-import subprocess
-import code
 import pandas as pd
 
-from pcapfile import savefile
-from pcapfile.protocols.transport.tcp import TCP
-from pcapfile.protocols.transport.udp import UDP
+import preprocessing as pre
 
 ARGS = []
 
 
-#######################################################################
-# MAIN LOGIC
-#######################################################################
+def extract_metadata():
+    """
+    Extract metadata from compressed *.tpxz archives and append the metadata
+    to compressed *.csv.gz files
+    """
 
-
-def main():
-    index = read_index(ARGS.traffic)
-
-    dataframe = pd.DataFrame(
-        columns=['tick', 'src', 'dst', 'packets', 'bytes'])
+    create_output(ARGS.out)
+    index = pre.pixz.read_index(ARGS.traffic)
 
     try:
+        tmp = tempfile.mkdtemp(prefix="ictf2017_cache_")
+        print("Using temporary cache for extracted files at {}".format(tmp))
 
-        # cache contents
-        tmpdir = tempfile.mkdtemp(prefix="pixz_cache_")
-        print("Using temporary cache for extracted files in %s" % tmpdir)
+        file_indexes = [i for i in range(len(index))
+                        if (i >= ARGS.start and i <= ARGS.stop)]
 
-        firstTimestamp = None
+        # a wrapper which measures execution times and calculates eta
+        eta = pre.timing.ETACalculator(len(file_indexes))
 
-        for i in range(4):  # len(index):
-            pcapfile = extract_pcap(ARGS.traffic, index[0], tmpdir)
-            read_pcap(pcapfile, firstTimestamp)
-            print("\n" + "#" * 80 + "\n")
+        for count, i in enumerate(file_indexes):
+            print("\nProcessing index {} from [{}, {}]"
+                  .format(i, min(file_indexes), max(file_indexes)))
 
-        # clean up extracted pcap file
-        os.remove(pcapfile)
+            def extract_read_append_remove():
+                pcapfile = pre.pixz.extract_pcap(ARGS.traffic, index[i], tmp)
+                metadata = pre.pcap.read(pcapfile)
+                append_output(metadata, ARGS.out)
+                os.remove(pcapfile)
 
-    finally:
-        # clean up everything
-        shutil.rmtree(tmpdir)
-        print("Cleaned up temporary cache %s" % tmpdir)
-
-
-def read_index(archive):
-    # List archive contents and remove the root directory (first entry)
-    print("Reading archive contents of %s ..." % archive)
-    index = subprocess.check_output(
-        ["pixz", "-l", archive]).decode("utf-8").splitlines()
-    del index[0]
-    print("Observed %d traffic captures within the archive" % len(index))
-
-    return sorted_alpanumeric(index)
-
-
-def extract_pcap(archive, content, tmpdir):
-    # unpack and untar (with a temporary file for pixz)
-    pixz_tmp_out = os.path.join(tmpdir, "pixz.tar")
-    subprocess.call(["pixz", "-x", content, "-i", archive, "-o", pixz_tmp_out])
-    subprocess.call(["tar", "xf", pixz_tmp_out, "-C", tmpdir])
-    os.remove(pixz_tmp_out)
-
-    # rename to pcap
-    content_extracted = os.path.join(tmpdir, content)
-    os.rename(content_extracted, content_extracted + ".pcap")
-    content_extracted += ".pcap"
-
-    print("Extracted %s" % content_extracted)
-    return content_extracted
-
-
-def read_pcap(pcap, firstTimestamp=None):
-    dataframe = pd.DataFrame(
-        columns=['tick', 'src', 'dst', 'packets', 'bytes'])
-
-    try:
-        handle = open(pcap, 'rb')
-        cap = savefile.load_savefile(handle, layers=2, verbose=False)
-        for pack in cap.packets:
-
-            # remember first timestamp if not explicitly given
-            if firstTimestamp is None:
-                firstTimestamp = pack.timestamp
-            assert pack.timestamp >= firstTimestamp
-
-            # calculate tick
-            tick = ((pack.timestamp - firstTimestamp) / 60.0) // ARGS.tick
-            src = ip2team(pack.packet.payload.src)
-            dst = ip2team(pack.packet.payload.dst)
-            src_port = TCP(pack.packet.payload.payload).src_port
-            dst_port = TCP(pack.packet.payload.payload).dst_port
-            eth_pack_len = pack.packet_len
-            ip_pack_len = pack.packet.payload.len
-
-            print("%03d: %d -> %d with %d bytes" %
-                  (tick, src, dst, ip_pack_len))
-
-            # TODO
+            eta.execute(count, extract_read_append_remove)
 
     finally:
-        handle.close()
-
-    return firstTimestamp
-
-
-#######################################################################
-# UTILITIES
-#######################################################################
+        shutil.rmtree(tmp)
+        print("Cleaned up temporary cache {}\n\n".format(tmp))
 
 
-def ip2int(addr):
-    return struct.unpack("!I", socket.inet_aton(addr))[0]
+def create_output(filename):
+    """
+    Create the output file if necessary
+    """
+    if not os.path.isfile(filename):
+        pd.DataFrame(columns=pre.pcap.COLUMNS).set_index(pre.pcap.INDEX) \
+            .to_csv(ARGS.out, compression='gzip')
+        print("Created empty output file {}".format(ARGS.out))
+    else:
+        size = os.path.getsize(filename) / 1.0e+6
+        print("Found existing output file which will be appended {} ({:.2F} MB)"
+              .format(ARGS.out, size))
 
 
-def int2ip(addr):
-    return socket.inet_ntoa(struct.pack("!I", addr))
+def append_output(metadata, filename):
+    """
+    Append metadata to the compressed *.csv.gz file
+    """
+    size_pre = os.path.getsize(filename) / 1.0e+6
+    metadata.to_csv(filename, header=False,
+                    mode='a', compression='gzip')
+    size_post = os.path.getsize(filename) / 1.0e+6
+    size_appended = size_post - size_pre
 
-
-def team2ip(team):
-    team_subnet = team // 254
-    return '172.31.%d.%d' % (129 + team_subnet, (team + team_subnet) % 255)
-
-
-IP_BASE = ip2int('172.31.129.0')
-
-
-def ip2team(addr):
-    if not isinstance(addr, int):
-        addr = ip2int(addr)
-
-    id = addr - IP_BASE
-    id -= 2 * (id // 256)
-
-    return id
-
-
-def sorted_alpanumeric(elements):
-    def alphanum_key(key):
-        return [(int(c) if c.isdigit() else c) for c in re.split('([0-9]+)', key)]
-
-    return sorted(elements, key=alphanum_key)
-
-
-#######################################################################
-# ENTRY POINT
-#######################################################################
+    print("Appended {:.2F} MB of metadata to {} ({:.2F} MB)"
+          .format(size_appended, filename, size_post))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
+    PARSER = argparse.ArgumentParser(
         description='Decompress *.tpxz and extract metadata from the *.pcap files.')
-    parser.add_argument('traffic', type=str,
+    PARSER.add_argument('traffic', type=str,
                         help='The compressed *.tpxz archive containing raw traffic data')
-    parser.add_argument('--from', type=int, default=None,
-                        help='Extract only traffic data starting with this sequence number, inclusive')
-    parser.add_argument('--to', type=int, default=None,
-                        help='Extract only traffic data up to this sequence number, inclusive')
-    parser.add_argument('--tick', type=float, default=4.8,
+    PARSER.add_argument('out', type=str,
+                        help='The *.csv.gz which will be appended')
+    PARSER.add_argument('--start', type=int, default=0,
+                        help='Extract only traffic data starting with this index number, inclusive')
+    PARSER.add_argument('--stop', type=int, default=1e+9,
+                        help='Extract only traffic data up to this index number, inclusive')
+    PARSER.add_argument('--tick', type=float, default=4.8,
                         help='The duration of a tick in minutes')
-    ARGS = parser.parse_args()
+    ARGS = PARSER.parse_args()
 
-    main()
+    extract_metadata()
