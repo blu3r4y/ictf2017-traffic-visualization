@@ -5,6 +5,7 @@ Methods for decompressing *.tpxz archives
 from __future__ import print_function
 
 import os
+import tarfile
 import subprocess
 
 from preprocessing.util import sorted_alpanumeric
@@ -34,7 +35,8 @@ def extract_pcap(archive, filename, out_directory):
     # unpack and untar (with a temporary *.tar file)
     tar_path = os.path.join(out_directory, "pixz.tar")
     subprocess.call(["pixz", "-x", filename, "-i", archive, "-o", tar_path])
-    subprocess.call(["tar", "xf", tar_path, "-C", out_directory])
+    with tarfile.open(tar_path) as tar:
+        tar.extractall(path=out_directory)
     os.remove(tar_path)
 
     # rename to *.pcap
