@@ -20,10 +20,10 @@ class ETACalculator():
         self.mean = 0
         self.n = 0
 
-    def execute(self, i, func, verbose=True):
+    def execute(self, i, func, args={}, verbose=True):
         # measure execution time
         start = time.clock()
-        func()
+        retval = func(**args)
         elapsed = time.clock() - start
 
         # calculate eta
@@ -34,3 +34,5 @@ class ETACalculator():
         if verbose:
             print("Execution took {} (ETA: {})"
                   .format(datetime.timedelta(seconds=elapsed), datetime.timedelta(seconds=eta)))
+
+        return retval
