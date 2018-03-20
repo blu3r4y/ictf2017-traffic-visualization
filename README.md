@@ -15,7 +15,7 @@ On GitHub, one can observe our IPython notebook [here](src/ictf2017-traffic-visu
 
 ## Dataset
 
-The extracted metadata is available for download [here](https://www.dropbox.com/s/ywhb03mvzdo40da/traffic_2_60sec.csv.gz?dl=1) (~ 175 MB).
+The extracted metadata is available for download [here](https://www.dropbox.com/s/fv2xlmhg0vg8c0g/traffic_2_60sec.csv.gz?dl=1) (~ 175 MB).
 
 The full dataset is available at the [2016-2017 iCTF archive page](https://ictf.cs.ucsb.edu/pages/the-2016-2017-ictf.html).
 
